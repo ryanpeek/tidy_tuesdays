@@ -24,17 +24,21 @@ create_plot <- function(data) {
     geom_histogram()
 }
 
+drake_example("gapminder")
+drake_example("main")
+
 
 # Get the files with drake_example("main").
-file.exists("raw_data.xlsx")
+file.exists(here::here("main", "raw_data.xlsx"))
 #> [1] TRUE
-file.exists("report.Rmd")
+file.exists(here::here("main", "report.Rmd"))
 #> [1] TRUE
 
 
 ## UPDATE
+here::set_here("main")
 plan <- drake_plan(
-  #raw_data = readxl::read_excel(file_in("raw_data.xlsx")),
+  #raw_data = readxl::read_excel(file_in("main/raw_data.xlsx")),
   raw_data = iris,
   data = raw_data %>%
     mutate(Species = forcats::fct_inorder(Species)),
@@ -49,6 +53,7 @@ plan <- drake_plan(
 plan
 
 # update
+here::set_here("main")
 make(plan)
 
 
