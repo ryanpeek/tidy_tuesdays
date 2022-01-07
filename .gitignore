@@ -5,3 +5,4 @@ data/canada_treecover_agg.Rds
 /Users/rapeek/Documents/github/tidy_tuesdays/.secrets
 .DS_Store
 .secrets/*
+.httr-oauth
