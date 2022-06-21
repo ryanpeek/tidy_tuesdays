@@ -1,0 +1,186 @@
+---
+title: "spatial_modeling"
+description: |
+  spatial modeling with Julia Silge
+author:
+  - name: RP 
+date: "updated `r Sys.Date()`"
+output: distill::distill_article
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+# Spatial Sampling & Drought
+
+This is from this [blog/youtube post](https://juliasilge.com/blog/drought-in-tx/) about tidy tuesday [drought data](https://github.com/rfordatascience/tidytuesday/tree/master/data/2022/2022-06-14).
+
+ - [DSCI Stats](https://droughtmonitor.unl.edu/DmData/DataDownload/DSCI.aspx)
+ - [All Drought Data](https://droughtmonitor.unl.edu/DmData/DataDownload.aspx)
+
+
+## Get Data
+
+First we need to grab the data.
+
+```{r, eval=FALSE, echo=TRUE}
+library(tidyverse)
+
+drought_raw <- read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-06-14/drought-fips.csv')
+
+drought <- drought_raw %>%
+  filter(State == "TX", lubridate::year(date) == 2021) %>%
+  group_by(GEOID = FIPS) %>%
+  summarise(DSCI = mean(DSCI)) %>%
+  ungroup()
+
+# save this for the future
+write_rds(drought, file = "data/drought_tx_2021.rds")
+write_rds(drought_raw, file = "data/drought_raw.rds", compress = "bz") # large!
+write_csv(drought_raw, file = "data/drought_raw.csv.gz")
+
+```
+
+### Clean and Join with `{tidycensus}`
+
+Use {tidycensus} package to download variables about median rent, income, etc.
+
+```{r, eval=TRUE, cache=TRUE}
+library(tidyverse)
+library(sf)
+drought <- read_rds("data/drought_tx_2021.rds")
+
+library(tidycensus)
+tx_median_rent <-
+  get_acs(
+    geography = "county",
+    state = "TX",
+    variables = "B19013_001",
+    year = 2020,
+    geometry = TRUE,
+
+  )
+
+head(tx_median_rent)
+```
+
+Then join that data to the drought dataset (by `GEOID`).
+
+```{r}
+drought_sf <- tx_median_rent %>% left_join(drought)
+```
+
+### Plot
+
+Then plot by the Drought Severity and Coverage Index (DSCI).
+
+The DSCI is an experimental method for converting drought levels from the U.S. Drought Monitor map to a single value for an area. DSCI values are part of the U.S. Drought Monitor data tables. Possible values of the DSCI are from 0 to 500. Zero means that none of the area is abnormally dry or in drought, and 500 means that all of the area is in D4, exceptional drought
+
+```{r}
+
+drought_sf %>%
+  ggplot(aes(fill = DSCI)) +
+  geom_sf(alpha = 0.9, color = NA) +
+  scale_fill_viridis_c()
+
+# how many unique counties?
+length(unique(drought_sf$NAME))
+
+
+```
+
+### How is drought related to median income?
+
+```{r}
+drought_sf %>%
+  ggplot(aes(DSCI, estimate)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm") +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(x = "Drought score", y = "Median household income")
+```
+
+# Model with Spatial Resampling
+
+With spatial data like what we have from the Census, areas close to each other are often similar so we don’t want to randomly resample our observations. Instead, we want to use a resampling strategy that accounts for that autocorrelation. This summer Mike has been adding great new resampling methods; let’s use spatial block cross-validation for these counties in Texas.
+
+```{r}
+
+library(tidymodels)
+#devtools::install_github("tidymodels/spatialsample")
+library(spatialsample)
+
+set.seed(123)
+folds <- spatial_block_cv(drought_sf, v = 10)
+folds
+
+# plot
+autoplot(folds)
+```
+
+Or look at individual folds to determine what is in analysis (training) vs. assessment (testing) datasets.
+
+```{r}
+autoplot(folds$splits[[1]])
+```
+
+## Build the Model
+
+Create a simple linear model explaining the `median income` by the `drought score`, and fit that model to each of our resamples. We can use control_resamples(`save_pred = TRUE`) to save not only the metrics but also the predictions for each resample.
+
+```{r}
+
+drought_res <-
+    workflow(estimate ~ DSCI, linear_reg()) %>%
+    fit_resamples(folds, control = control_resamples(save_pred = TRUE))
+
+drought_res
+
+# view predictions in dataframe?
+collect_predictions(drought_res)
+
+```
+
+## Join and Map
+
+```{r}
+drought_rmse <-
+    drought_sf %>%
+    mutate(.row = row_number()) %>%
+    left_join(collect_predictions(drought_res)) %>%
+    group_by(GEOID) %>%
+    rmse(estimate, .pred) %>%
+    select(GEOID, .estimate)
+head(drought_rmse)
+```
+
+Now join the data and plot the income RMSE (based on drought relationship) in $. RMSE is a metric of how bad/good we can predict drought using income. Higher values mean worse model prediction.
+
+```{r}
+drought_sf %>%
+    left_join(drought_rmse) %>%
+    ggplot(aes(fill = .estimate)) +
+    geom_sf(color = NA, alpha = 0.8) +
+    labs(fill = "RMSE") +
+    scale_fill_viridis_c(labels = scales::dollar_format())
+
+```
+
+
+## Test w West 
+
+```{r}
+# download here: 
+dall <- read_csv("data/drought_19801001_20220616_west_by_county.csv.zip")
+
+# how many counties per state?
+dall %>% select(State, County) %>% distinct() %>% group_by(State) %>% tally()
+
+
+```
+
+
+
